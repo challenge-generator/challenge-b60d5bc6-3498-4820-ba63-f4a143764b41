@@ -1,0 +1,223 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: transaction-processor
+  namespace: production
+  labels:
+    app: transaction-processor
+    tier: backend
+    environment: production
+spec:
+  replicas: 3
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: transaction-processor
+  template:
+    metadata:
+      labels:
+        app: transaction-processor
+        version: v1
+        tier: backend
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: transaction-processor-sa
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: transaction-processor
+          image: transaction-processor:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+              name: http
+              protocol: TCP
+            - containerPort: 9090
+              name: grpc
+              protocol: TCP
+          env:
+            - name: JAVA_OPTS
+              value: "-Xms2g -Xmx4g -XX:+UseG1GC"
+            - name: SPRING_PROFILES_ACTIVE
+              value: "production"
+            - name: DATABASE_POOL_SIZE
+              value: "20"
+            - name: KAFKA_CONSUMER_THREADS
+              value: "4"
+          resources:
+            requests:
+              memory: "2Gi"
+              cpu: "1000m"
+            limits:
+              memory: "4Gi"
+              cpu: "2000m"
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8080
+            initialDelaySeconds: 60
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          volumeMounts:
+            - name: app-config
+              mountPath: /config
+              readOnly: true
+            - name: logs
+              mountPath: /var/log/application
+      volumes:
+        - name: app-config
+          configMap:
+            name: transaction-processor-config
+        - name: logs
+          emptyDir: {}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - transaction-processor
+                topologyKey: kubernetes.io/hostname
+---
+# Canary Deployment - se activa cuando se requiere estrategia canary
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: transaction-processor-canary
+  namespace: production
+  labels:
+    app: transaction-processor
+    tier: backend
+    deployment-type: canary
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: transaction-processor
+      version: canary
+  template:
+    metadata:
+      labels:
+        app: transaction-processor
+        version: canary
+        tier: backend
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+    spec:
+      serviceAccountName: transaction-processor-sa
+      containers:
+        - name: transaction-processor
+          image: transaction-processor:canary
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+              name: http
+          resources:
+            requests:
+              memory: "2Gi"
+              cpu: "1000m"
+            limits:
+              memory: "4Gi"
+              cpu: "2000m"
+---
+# Blue-Green Deployment - ambiente verde (nueva versión)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: transaction-processor-green
+  namespace: production
+  labels:
+    app: transaction-processor
+    tier: backend
+    deployment-type: green
+spec:
+  replicas: 3
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      app: transaction-processor
+      version: green
+  template:
+    metadata:
+      labels:
+        app: transaction-processor
+        version: green
+        tier: backend
+    spec:
+      serviceAccountName: transaction-processor-sa
+      containers:
+        - name: transaction-processor
+          image: transaction-processor:green
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+---
+# HorizontalPodAutoscaler para escalado automático
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: transaction-processor-hpa
+  namespace: production
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: transaction-processor
+  minReplicas: 3
+  maxReplicas: 20
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 15
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Percent
+          value: 10
+          periodSeconds: 60

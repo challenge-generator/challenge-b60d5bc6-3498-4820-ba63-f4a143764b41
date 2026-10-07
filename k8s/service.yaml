@@ -1,0 +1,119 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: transaction-processor
+  namespace: production
+  labels:
+    app: transaction-processor
+    tier: backend
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+    service.beta.kubernetes.io/aws-load-balancer-backend-protocol: "http"
+    service.beta.kubernetes.io/aws-load-balancer-ssl-cert: "arn:aws:acm:us-east-1:123456789:certificate/cert-id"
+    service.beta.kubernetes.io/aws-load-balancer-ssl-ports: "443"
+    service.beta.kubernetes.io/aws-load-balancer-cross-zone-load-balancing-enabled: "true"
+spec:
+  type: LoadBalancer
+  sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 10800
+  selector:
+    app: transaction-processor
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80
+      targetPort: 8080
+    - name: https
+      protocol: TCP
+      port: 443
+      targetPort: 8080
+    - name: grpc
+      protocol: TCP
+      port: 9090
+      targetPort: 9090
+---
+# Service para versión canary
+apiVersion: v1
+kind: Service
+metadata:
+  name: transaction-processor-canary
+  namespace: production
+  labels:
+    app: transaction-processor
+    tier: backend
+    deployment-type: canary
+spec:
+  type: ClusterIP
+  selector:
+    app: transaction-processor
+    version: canary
+  ports:
+    - name: http
+      protocol: TCP
+      port: 8080
+      targetPort: 8080
+---
+# Service para versión green (Blue-Green)
+apiVersion: v1
+kind: Service
+metadata:
+  name: transaction-processor-green
+  namespace: production
+  labels:
+    app: transaction-processor
+    tier: backend
+    deployment-type: green
+spec:
+  type: ClusterIP
+  selector:
+    app: transaction-processor
+    version: green
+  ports:
+    - name: http
+      protocol: TCP
+      port: 8080
+      targetPort: 8080
+---
+# Service para versión blue (Blue-Green)
+apiVersion: v1
+kind: Service
+metadata:
+  name: transaction-processor-blue
+  namespace: production
+  labels:
+    app: transaction-processor
+    tier: backend
+    deployment-type: blue
+spec:
+  type: ClusterIP
+  selector:
+    app: transaction-processor
+    version: blue
+  ports:
+    - name: http
+      protocol: TCP
+      port: 8080
+      targetPort: 8080
+---
+# ServiceMonitor para Prometheus
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: transaction-processor-monitor
+  namespace: production
+  labels:
+    app: transaction-processor
+spec:
+  selector:
+    matchLabels:
+      app: transaction-processor
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s
+      scheme: http
+  namespaceSelector:
+    matchNames:
+      - production
